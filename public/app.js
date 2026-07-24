@@ -1,20 +1,15 @@
-// Инициализация Telegram Mini App
 const tg = window.Telegram.WebApp;
 tg.expand();
 tg.ready();
 
-// Глобальные переменные
 let currentUser = null;
 let userRole = 'client';
-let currentScreen = 'profile';
-let selectedService = null;
+let selectedServices = [];
 let currentOrderId = null;
 let chatInterval = null;
 
-// API URL
 const API_BASE = window.location.origin + '/api';
 
-// Сервисы электрика с ценами
 const SERVICES = [
     { name: 'Нет света', price: 'от 500 ₽', category: 'Аварийные' },
     { name: 'Короткое замыкание', price: 'от 800 ₽', category: 'Аварийные' },
@@ -48,7 +43,7 @@ const SERVICES = [
     { name: 'Прокладка кабеля', price: 'от 150 ₽/м', category: 'Монтажные работы' }
 ];
 
-// Инициализация приложения
+// Инициализация
 async function initApp() {
     try {
         const initData = tg.initDataUnsafe;
@@ -62,11 +57,9 @@ async function initApp() {
                 if (!response.ok) {
                     document.getElementById('app').innerHTML = `
                         <div class="loading-screen">
-                            <p style="text-align: center; padding: 20px;">
-                                👋 Добро пожаловать!<br><br>
-                                Вы еще не зарегистрированы.<br>
-                                Вернитесь в бот и нажмите "Начать регистрацию"
-                            </p>
+                            <div class="lightning-icon">⚡</div>
+                            <p>Вы еще не зарегистрированы</p>
+                            <p style="color: #999; font-size: 14px;">Вернитесь в бот и нажмите "Начать регистрацию"</p>
                         </div>
                     `;
                     return;
@@ -85,36 +78,32 @@ async function initApp() {
                     showClientPanel();
                 }
             } catch (error) {
-                showError('Ошибка загрузки данных: ' + error.message);
+                showError('Ошибка загрузки данных');
             }
         } else {
             showError('Откройте приложение через Telegram');
         }
     } catch (error) {
-        showError('Ошибка: ' + error.message);
+        showError('Ошибка инициализации');
     }
 }
 
 function showError(message) {
     document.getElementById('app').innerHTML = `
         <div class="loading-screen">
-            <p style="color: red; text-align: center; padding: 20px;">${message}</p>
+            <div class="lightning-icon" style="font-size: 50px;">⚡</div>
+            <p>${message}</p>
         </div>
     `;
 }
 
-// API запросы
 async function fetchAPI(endpoint, options = {}) {
     try {
         const response = await fetch(API_BASE + endpoint, {
             headers: { 'Content-Type': 'application/json' },
             ...options
         });
-        
-        if (!response.ok) {
-            throw new Error(`HTTP ${response.status}`);
-        }
-        
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
         return await response.json();
     } catch (error) {
         console.error('API Error:', error);
@@ -122,7 +111,6 @@ async function fetchAPI(endpoint, options = {}) {
     }
 }
 
-// Рендер основного приложения
 function renderApp() {
     return `
         <div class="app-container">
@@ -153,7 +141,7 @@ function showClientPanel() {
                 Профиль
             </button>
             <button class="nav-item" onclick="switchScreen('create-order')">
-                <span class="nav-item-icon">➕</span>
+                <span class="nav-item-icon">⚡</span>
                 Создать
             </button>
             <button class="nav-item" onclick="switchScreen('orders')">
@@ -166,19 +154,14 @@ function showClientPanel() {
 
 function switchScreen(screenName) {
     document.querySelectorAll('#main-screen .screen').forEach(s => s.classList.remove('active'));
-    const targetScreen = document.getElementById(screenName + '-screen');
-    if (targetScreen) {
-        targetScreen.classList.add('active');
-    }
+    document.getElementById(screenName + '-screen').classList.add('active');
     
     document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
     const clickedBtn = event?.target?.closest('.nav-item');
-    if (clickedBtn) {
-        clickedBtn.classList.add('active');
-    }
+    if (clickedBtn) clickedBtn.classList.add('active');
     
     if (screenName === 'orders') loadOrdersList();
-    if (screenName === 'profile') loadProfileData();
+    if (screenName === 'profile') refreshProfile();
 }
 
 function renderClientProfile() {
@@ -186,6 +169,7 @@ function renderClientProfile() {
         <div class="profile-header">
             <div class="profile-avatar">${currentUser.firstName ? currentUser.firstName[0] : '?'}</div>
             <h2>${currentUser.firstName || ''} ${currentUser.lastName || ''}</h2>
+            <span class="profile-role-badge">👤 Клиент</span>
         </div>
         
         <div class="profile-stats">
@@ -204,9 +188,19 @@ function renderClientProfile() {
         </div>
         
         <div class="profile-info">
-            <p>📱 ${currentUser.phone || 'Не указан'}</p>
-            <p>📍 ${currentUser.region || 'Не указан'}</p>
-            <p>🏠 ${currentUser.address || 'Не указан'}</p>
+            <div class="profile-info-item">
+                <span class="profile-info-icon">📱</span>
+                <span class="profile-info-text">${currentUser.phone || 'Не указан'}</span>
+            </div>
+            <div class="profile-info-item">
+                <span class="profile-info-icon">📍</span>
+                <span class="profile-info-text">${currentUser.region || 'Не указан'}</span>
+            </div>
+            <div class="profile-info-item">
+                <span class="profile-info-icon">🏠</span>
+                <span class="profile-info-text">${currentUser.address || 'Не указан'}</span>
+                <span class="profile-info-edit" onclick="editAddress()">✏️</span>
+            </div>
         </div>
         
         <button class="btn btn-primary btn-block" onclick="editProfile()">
@@ -215,52 +209,70 @@ function renderClientProfile() {
     `;
 }
 
-function loadProfileData() {
-    const profileScreen = document.getElementById('profile-screen');
-    if (profileScreen) {
-        profileScreen.innerHTML = renderClientProfile();
+function refreshProfile() {
+    document.getElementById('profile-screen').innerHTML = renderClientProfile();
+}
+
+async function editAddress() {
+    const newAddress = prompt('Введите новый адрес:', currentUser.address || '');
+    if (newAddress !== null && newAddress !== currentUser.address) {
+        try {
+            await fetchAPI('/user/' + currentUser.id, {
+                method: 'PUT',
+                body: JSON.stringify({ address: newAddress })
+            });
+            currentUser.address = newAddress;
+            refreshProfile();
+            showToast('✅ Адрес обновлен');
+        } catch (error) {
+            showToast('❌ Ошибка обновления');
+        }
     }
+}
+
+function showToast(message) {
+    const toast = document.createElement('div');
+    toast.className = 'toast';
+    toast.textContent = message;
+    document.body.appendChild(toast);
+    setTimeout(() => toast.remove(), 3000);
 }
 
 function renderCreateOrder() {
     return `
-        <h2>📝 Создать заявку</h2>
+        <h2><span class="icon">⚡</span> Создать заявку</h2>
         
         <div class="form-group">
-            <label class="form-label">Поиск услуги</label>
-            <input type="text" class="form-input" placeholder="Начните вводить услугу..." 
+            <label class="form-label">Выберите услуги (можно несколько)</label>
+            <input type="text" class="form-input" placeholder="🔍 Поиск услуги..." 
                    oninput="searchServices(this.value)">
-            <div id="service-results" class="service-list"></div>
+            <div id="service-results" class="service-list" style="display:none;"></div>
         </div>
         
-        <div class="form-group">
-            <label class="form-label">Выбранная услуга</label>
-            <select id="service-select" class="form-select" onchange="updateServicePrice()">
-                <option value="">Выберите услугу</option>
-                ${SERVICES.map(s => 
-                    `<option value="${s.name}" data-price="${s.price}">${s.name} (${s.price})</option>`
-                ).join('')}
-            </select>
-        </div>
+        <div class="selected-services-list" id="selected-services"></div>
         
         <div class="form-group">
             <label class="form-label">Адрес</label>
-            <input type="text" id="order-address" class="form-input" placeholder="Улица, дом, квартира">
+            <input type="text" id="order-address" class="form-input" 
+                   placeholder="Улица, дом, квартира" value="${currentUser.address || ''}">
         </div>
         
         <div class="form-group">
             <label class="form-label">Описание проблемы</label>
-            <textarea id="order-description" class="form-textarea" placeholder="Опишите проблему подробнее"></textarea>
+            <textarea id="order-description" class="form-textarea" 
+                      placeholder="Опишите проблему подробнее..."></textarea>
         </div>
         
         <div class="form-group">
             <label class="form-label">Желаемое время</label>
-            <input type="text" id="order-time" class="form-input" placeholder="Например: завтра с 10 до 12">
+            <input type="text" id="order-time" class="form-input" 
+                   placeholder="Например: завтра с 10:00 до 12:00">
         </div>
         
         <div class="form-group">
             <label class="form-label">Комментарий</label>
-            <textarea id="order-comment" class="form-textarea" placeholder="Дополнительная информация"></textarea>
+            <textarea id="order-comment" class="form-textarea" 
+                      placeholder="Дополнительная информация..."></textarea>
         </div>
         
         <button class="btn btn-primary btn-block" onclick="publishOrder()">
@@ -269,59 +281,59 @@ function renderCreateOrder() {
     `;
 }
 
-function updateServicePrice() {
-    const select = document.getElementById('service-select');
-    if (select && select.options[select.selectedIndex]) {
-        const selectedOption = select.options[select.selectedIndex];
-        selectedService = {
-            name: select.value,
-            price: selectedOption.dataset.price
-        };
-    }
-}
-
 function searchServices(query) {
+    const container = document.getElementById('service-results');
+    
     if (!query || query.trim() === '') {
-        document.getElementById('service-results').innerHTML = '';
+        container.style.display = 'none';
         return;
     }
     
     const results = SERVICES.filter(s => 
-        s.name.toLowerCase().includes(query.toLowerCase())
+        s.name.toLowerCase().includes(query.toLowerCase()) &&
+        !selectedServices.find(ss => ss.name === s.name)
     );
     
-    const container = document.getElementById('service-results');
-    if (!container) return;
-    
+    container.style.display = 'block';
     container.innerHTML = results.length === 0 
         ? '<div class="service-item">Ничего не найдено</div>'
         : results.map(s => `
-            <div class="service-item ${selectedService?.name === s.name ? 'selected' : ''}" 
-                 onclick="selectService('${s.name}', '${s.price}')">
+            <div class="service-item" onclick="addService('${s.name}', '${s.price}')">
                 <strong>${s.name}</strong>
                 <span class="service-price">${s.price}</span>
             </div>
         `).join('');
 }
 
-function selectService(name, price) {
-    selectedService = { name, price };
-    const select = document.getElementById('service-select');
-    if (select) {
-        select.value = name;
+function addService(name, price) {
+    if (!selectedServices.find(s => s.name === name)) {
+        selectedServices.push({ name, price });
+        updateSelectedServices();
     }
     
-    document.querySelectorAll('.service-item').forEach(item => {
-        item.classList.remove('selected');
-        if (item.querySelector('strong').textContent === name) {
-            item.classList.add('selected');
-        }
-    });
+    document.getElementById('service-results').style.display = 'none';
+    const searchInput = document.querySelector('#create-order-screen .form-input');
+    if (searchInput) searchInput.value = '';
+}
+
+function removeService(name) {
+    selectedServices = selectedServices.filter(s => s.name !== name);
+    updateSelectedServices();
+}
+
+function updateSelectedServices() {
+    const container = document.getElementById('selected-services');
+    container.innerHTML = selectedServices.map(s => `
+        <div class="selected-service-badge">
+            ${s.name} (${s.price})
+            <span class="remove" onclick="removeService('${s.name}')">×</span>
+        </div>
+    `).join('');
 }
 
 function renderOrdersList() {
     return `
-        <h2>📋 Мои заявки</h2>
+        <h2><span class="icon">📋</span> Мои заявки</h2>
         
         <div class="tabs">
             <button class="tab active" onclick="filterOrders('active', this)">Активные</button>
@@ -343,13 +355,13 @@ async function loadOrdersList(status = 'active') {
         );
         
         container.innerHTML = filteredOrders.length === 0 
-            ? '<div class="empty-state"><p>Нет заявок</p></div>'
+            ? '<div class="empty-state"><div class="icon">📭</div><p>Нет заявок</p></div>'
             : filteredOrders.map(order => `
                 <div class="order-card" onclick="viewOrder('${order.id}')">
                     <div class="order-header">
                         <h3>${order.service}</h3>
-                        <span class="order-status status-${order.status === 'active' ? 'active' : 'completed'}">
-                            ${order.status === 'active' ? 'Активна' : 'Завершена'}
+                        <span class="order-status status-${order.status}">
+                            ${order.status === 'active' ? '⚡ Активна' : '✅ Завершена'}
                         </span>
                     </div>
                     <div class="order-price">${order.price}</div>
@@ -357,7 +369,7 @@ async function loadOrdersList(status = 'active') {
                         <p>📍 ${order.address}</p>
                         <p>🕐 ${order.desiredTime || 'Не указано'}</p>
                         <p>📅 ${new Date(order.createdAt).toLocaleDateString()}</p>
-                        ${order.electricianId ? '<p>👨‍🔧 Исполнитель назначен</p>' : '<p>🔍 Ищем исполнителя</p>'}
+                        ${order.electricianId ? '<p>👨‍🔧 Исполнитель назначен</p>' : '<p>🔍 Ищем исполнителя...</p>'}
                     </div>
                 </div>
             `).join('');
@@ -373,14 +385,13 @@ function filterOrders(status, btn) {
 }
 
 async function publishOrder() {
-    const serviceSelect = document.getElementById('service-select');
     const address = document.getElementById('order-address').value.trim();
     const description = document.getElementById('order-description').value.trim();
     const time = document.getElementById('order-time').value.trim();
     const comment = document.getElementById('order-comment').value.trim();
     
-    if (!serviceSelect || !serviceSelect.value) {
-        tg.showAlert('Выберите услугу');
+    if (selectedServices.length === 0) {
+        tg.showAlert('Выберите хотя бы одну услугу');
         return;
     }
     
@@ -389,22 +400,34 @@ async function publishOrder() {
         return;
     }
     
+    // Отправляем заявку для каждой выбранной услуги
     try {
-        await fetchAPI('/orders', {
-            method: 'POST',
-            body: JSON.stringify({
-                clientId: currentUser.id,
-                service: serviceSelect.value,
-                price: selectedService?.price || 'Договорная',
-                address: address,
-                description: description,
-                desiredTime: time,
-                comment: comment
-            })
-        });
+        for (const service of selectedServices) {
+            await fetchAPI('/orders', {
+                method: 'POST',
+                body: JSON.stringify({
+                    clientId: currentUser.id,
+                    service: service.name,
+                    price: service.price,
+                    address: address,
+                    description: description,
+                    desiredTime: time,
+                    comment: comment
+                })
+            });
+        }
         
-        tg.showAlert('✅ Заявка опубликована!');
-        currentUser.ordersCount = (currentUser.ordersCount || 0) + 1;
+        tg.showAlert(`✅ Опубликовано заявок: ${selectedServices.length}`);
+        currentUser.ordersCount = (currentUser.ordersCount || 0) + selectedServices.length;
+        
+        // Очистка формы
+        selectedServices = [];
+        document.getElementById('order-address').value = currentUser.address || '';
+        document.getElementById('order-description').value = '';
+        document.getElementById('order-time').value = '';
+        document.getElementById('order-comment').value = '';
+        updateSelectedServices();
+        
         switchScreen('orders');
     } catch (error) {
         tg.showAlert('❌ Ошибка публикации');
@@ -475,7 +498,7 @@ async function cancelOrder(orderId) {
     }
 }
 
-// Интерфейс электрика
+// Электрик
 function showElectricianPanel() {
     const screen = document.getElementById('main-screen');
     screen.innerHTML = `
@@ -513,8 +536,7 @@ function switchElectricianScreen(screenName) {
     document.getElementById(screenName + '-screen').classList.add('active');
     
     document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
-    const clickedBtn = event?.target?.closest('.nav-item');
-    if (clickedBtn) clickedBtn.classList.add('active');
+    event?.target?.closest('.nav-item')?.classList.add('active');
     
     if (screenName === 'available-orders') loadAvailableOrders();
     if (screenName === 'my-jobs') loadMyJobs();
@@ -525,7 +547,7 @@ function renderElectricianProfile() {
         <div class="profile-header">
             <div class="profile-avatar">${currentUser.firstName ? currentUser.firstName[0] : '?'}</div>
             <h2>${currentUser.firstName || ''} ${currentUser.lastName || ''}</h2>
-            <p>👨‍🔧 Электрик</p>
+            <span class="profile-role-badge">👨‍🔧 Электрик</span>
         </div>
         
         <div class="profile-stats">
@@ -544,15 +566,21 @@ function renderElectricianProfile() {
         </div>
         
         <div class="profile-info">
-            <p>📱 ${currentUser.phone || 'Не указан'}</p>
-            <p>📍 ${currentUser.region || 'Не указан'}</p>
+            <div class="profile-info-item">
+                <span class="profile-info-icon">📱</span>
+                <span class="profile-info-text">${currentUser.phone || 'Не указан'}</span>
+            </div>
+            <div class="profile-info-item">
+                <span class="profile-info-icon">📍</span>
+                <span class="profile-info-text">${currentUser.region || 'Не указан'}</span>
+            </div>
         </div>
     `;
 }
 
 function renderAvailableOrders() {
     return `
-        <h2>📋 Доступные заявки</h2>
+        <h2><span class="icon">📋</span> Доступные заявки</h2>
         <div id="available-orders-container">Загрузка...</div>
     `;
 }
@@ -565,7 +593,7 @@ async function loadAvailableOrders() {
         const orders = await fetchAPI('/orders/available');
         
         container.innerHTML = orders.length === 0
-            ? '<div class="empty-state"><p>Нет доступных заявок</p></div>'
+            ? '<div class="empty-state"><div class="icon">📭</div><p>Нет доступных заявок</p></div>'
             : orders.map(order => `
                 <div class="order-card">
                     <h3>${order.service}</h3>
@@ -605,7 +633,7 @@ async function respondToOrder(orderId) {
 
 function renderMyJobs() {
     return `
-        <h2>🔧 Мои объекты</h2>
+        <h2><span class="icon">🔧</span> Мои объекты</h2>
         
         <div class="tabs">
             <button class="tab active" onclick="filterMyJobs('active', this)">Активные</button>
@@ -627,7 +655,7 @@ async function loadMyJobs(status = 'active') {
         );
         
         container.innerHTML = filteredOrders.length === 0
-            ? '<div class="empty-state"><p>Нет объектов</p></div>'
+            ? '<div class="empty-state"><div class="icon">📭</div><p>Нет объектов</p></div>'
             : filteredOrders.map(order => `
                 <div class="order-card">
                     <h3>${order.service}</h3>
@@ -640,7 +668,7 @@ async function loadMyJobs(status = 'active') {
                         💬 Чат с клиентом
                     </button>
                     ${order.status === 'active' ? `
-                        <button class="btn btn-danger btn-block" onclick="completeJob('${order.id}')">
+                        <button class="btn btn-success btn-block" onclick="completeJob('${order.id}')">
                             ✅ Завершить работу
                         </button>
                     ` : ''}
@@ -674,33 +702,28 @@ async function completeJob(orderId) {
 
 // Чат
 async function openChat(orderId) {
-    try {
-        currentOrderId = orderId;
-        const chatScreen = document.getElementById('chat-screen');
-        chatScreen.innerHTML = `
-            <div class="chat-container">
-                <div class="chat-header">
-                    <button class="back-btn" onclick="closeChat()">← Назад</button>
-                    <span>Чат по заявке</span>
-                </div>
-                <div class="chat-messages" id="chat-messages">
-                    Загрузка сообщений...
-                </div>
-                <div class="chat-input">
-                    <input type="text" id="message-input" placeholder="Сообщение..." onkeypress="if(event.key==='Enter')sendMessage()">
-                    <button class="chat-send-btn" onclick="sendMessage()">➤</button>
-                </div>
+    currentOrderId = orderId;
+    const chatScreen = document.getElementById('chat-screen');
+    chatScreen.innerHTML = `
+        <div class="chat-container">
+            <div class="chat-header">
+                <button class="back-btn" onclick="closeChat()">← Назад</button>
+                <span style="font-weight: 600;">Чат по заявке</span>
             </div>
-        `;
-        
-        chatScreen.classList.add('active');
-        document.getElementById('main-screen').style.display = 'none';
-        
-        await loadMessages();
-        chatInterval = setInterval(loadMessages, 3000);
-    } catch (error) {
-        tg.showAlert('Ошибка открытия чата');
-    }
+            <div class="chat-messages" id="chat-messages">Загрузка...</div>
+            <div class="chat-input">
+                <input type="text" id="message-input" placeholder="Сообщение..." 
+                       onkeypress="if(event.key==='Enter')sendMessage()">
+                <button class="chat-send-btn" onclick="sendMessage()">➤</button>
+            </div>
+        </div>
+    `;
+    
+    chatScreen.classList.add('active');
+    document.getElementById('main-screen').style.display = 'none';
+    
+    await loadMessages();
+    chatInterval = setInterval(loadMessages, 3000);
 }
 
 function closeChat() {
@@ -711,13 +734,11 @@ function closeChat() {
 
 async function loadMessages() {
     if (!currentOrderId) return;
-    
     const container = document.getElementById('chat-messages');
     if (!container) return;
     
     try {
         const messages = await fetchAPI('/messages/' + currentOrderId);
-        
         container.innerHTML = messages.length === 0 
             ? '<div class="empty-state"><p>Нет сообщений</p></div>'
             : messages.map(msg => `
@@ -726,31 +747,23 @@ async function loadMessages() {
                     <div class="message-time">${new Date(msg.createdAt).toLocaleTimeString()}</div>
                 </div>
             `).join('');
-        
         container.scrollTop = container.scrollHeight;
-    } catch (error) {
-        console.error('Ошибка загрузки сообщений');
-    }
+    } catch (error) {}
 }
 
 async function sendMessage() {
     const input = document.getElementById('message-input');
     if (!input) return;
-    
     const text = input.value.trim();
     if (!text) return;
     
     try {
-        // Определяем получателя
         const orders = await fetchAPI('/orders/client/' + currentUser.id);
         const myOrders = await fetchAPI('/orders/electrician/' + currentUser.id);
         const allOrders = [...orders, ...myOrders];
         const order = allOrders.find(o => o.id === currentOrderId);
         
-        if (!order) {
-            tg.showAlert('Заявка не найдена');
-            return;
-        }
+        if (!order) return;
         
         const receiverId = currentUser.id === order.clientId ? order.electricianId : order.clientId;
         
@@ -767,18 +780,18 @@ async function sendMessage() {
         input.value = '';
         await loadMessages();
     } catch (error) {
-        tg.showAlert('Ошибка отправки сообщения');
+        tg.showAlert('Ошибка отправки');
     }
 }
 
-// Админ панель
+// Админ
 function showAdminPanel() {
     const screen = document.getElementById('main-screen');
     screen.innerHTML = `
         <div class="screen active" style="padding: 16px;">
-            <h2>👑 Панель администратора</h2>
+            <h2><span class="icon">👑</span> Панель администратора</h2>
             
-            <div style="display: grid; gap: 12px; margin: 16px 0;">
+            <div style="display: grid; gap: 12px; margin: 20px 0;">
                 <button class="btn btn-primary btn-block" onclick="loadAdminSection('users')">
                     👥 Пользователи
                 </button>
@@ -804,19 +817,21 @@ async function loadAdminSection(section) {
             try {
                 const users = await fetchAPI('/admin/users');
                 content.innerHTML = `
-                    <h3>👥 Пользователи (${users.length})</h3>
-                    ${users.map(u => `
-                        <div class="admin-card">
-                            <p><strong>${u.firstName} ${u.lastName || ''}</strong></p>
-                            <p>📱 ${u.phone || 'Нет'}</p>
-                            <p>📍 ${u.region || 'Нет'}</p>
-                            <p>Роль: ${u.role}</p>
-                            <button class="btn btn-danger btn-block" onclick="deleteUserById('${u.id}')">Удалить</button>
-                        </div>
-                    `).join('')}
+                    <div class="admin-section">
+                        <h3>👥 Пользователи (${users.length})</h3>
+                        ${users.map(u => `
+                            <div class="admin-card">
+                                <p><strong>${u.firstName} ${u.lastName || ''}</strong></p>
+                                <p>📱 ${u.phone || 'Нет'}</p>
+                                <p>📍 ${u.region || 'Нет'}</p>
+                                <p>Роль: ${u.role === 'electrician' ? '👨‍🔧 Электрик' : u.role === 'admin' ? '👑 Админ' : '👤 Клиент'}</p>
+                                <button class="btn btn-danger btn-block" onclick="deleteUserById('${u.id}')">Удалить</button>
+                            </div>
+                        `).join('')}
+                    </div>
                 `;
             } catch (error) {
-                content.innerHTML = '<p>Ошибка загрузки пользователей</p>';
+                content.innerHTML = '<p>Ошибка загрузки</p>';
             }
             break;
             
@@ -824,19 +839,22 @@ async function loadAdminSection(section) {
             try {
                 const orders = await fetchAPI('/admin/orders');
                 content.innerHTML = `
-                    <h3>📋 Заявки (${orders.length})</h3>
-                    ${orders.map(o => `
-                        <div class="admin-card">
-                            <h4>${o.service}</h4>
-                            <p>Статус: ${o.status}</p>
-                            <p>Клиент: ${o.clientId}</p>
-                            <p>Исполнитель: ${o.electricianId || 'Не назначен'}</p>
-                            <button class="btn btn-danger btn-block" onclick="deleteOrderById('${o.id}')">Удалить</button>
-                        </div>
-                    `).join('')}
+                    <div class="admin-section">
+                        <h3>📋 Заявки (${orders.length})</h3>
+                        ${orders.map(o => `
+                            <div class="admin-card">
+                                <h4>${o.service}</h4>
+                                <p>💰 ${o.price}</p>
+                                <p>Статус: ${o.status}</p>
+                                <p>📍 ${o.address}</p>
+                                <p>Исполнитель: ${o.electricianId || 'Не назначен'}</p>
+                                <button class="btn btn-danger btn-block" onclick="deleteOrderById('${o.id}')">Удалить</button>
+                            </div>
+                        `).join('')}
+                    </div>
                 `;
             } catch (error) {
-                content.innerHTML = '<p>Ошибка загрузки заявок</p>';
+                content.innerHTML = '<p>Ошибка загрузки</p>';
             }
             break;
             
@@ -852,28 +870,30 @@ async function loadAdminSection(section) {
                 const activeOrders = orders.filter(o => o.status === 'active').length;
                 
                 content.innerHTML = `
-                    <h3>📊 Статистика</h3>
-                    <div class="profile-stats">
-                        <div class="stat-item">
-                            <div class="stat-value">${clients}</div>
-                            <div class="stat-label">Клиентов</div>
-                        </div>
-                        <div class="stat-item">
-                            <div class="stat-value">${electricians}</div>
-                            <div class="stat-label">Электриков</div>
-                        </div>
-                        <div class="stat-item">
-                            <div class="stat-value">${orders.length}</div>
-                            <div class="stat-label">Заявок</div>
-                        </div>
-                        <div class="stat-item">
-                            <div class="stat-value">${activeOrders}</div>
-                            <div class="stat-label">Активных</div>
+                    <div class="admin-section">
+                        <h3>📊 Статистика</h3>
+                        <div class="profile-stats">
+                            <div class="stat-item">
+                                <div class="stat-value">${clients}</div>
+                                <div class="stat-label">Клиентов</div>
+                            </div>
+                            <div class="stat-item">
+                                <div class="stat-value">${electricians}</div>
+                                <div class="stat-label">Электриков</div>
+                            </div>
+                            <div class="stat-item">
+                                <div class="stat-value">${orders.length}</div>
+                                <div class="stat-label">Всего заявок</div>
+                            </div>
+                            <div class="stat-item">
+                                <div class="stat-value">${activeOrders}</div>
+                                <div class="stat-label">Активных</div>
+                            </div>
                         </div>
                     </div>
                 `;
             } catch (error) {
-                content.innerHTML = '<p>Ошибка загрузки статистики</p>';
+                content.innerHTML = '<p>Ошибка загрузки</p>';
             }
             break;
     }
@@ -882,49 +902,36 @@ async function loadAdminSection(section) {
 async function deleteUserById(id) {
     try {
         await fetchAPI('/user/' + id, { method: 'DELETE' });
-        tg.showAlert('✅ Пользователь удален');
+        showToast('✅ Пользователь удален');
         loadAdminSection('users');
     } catch (error) {
-        tg.showAlert('❌ Ошибка удаления');
+        showToast('❌ Ошибка удаления');
     }
 }
 
 async function deleteOrderById(id) {
     try {
         await fetchAPI('/orders/' + id, { method: 'DELETE' });
-        tg.showAlert('✅ Заявка удалена');
+        showToast('✅ Заявка удалена');
         loadAdminSection('orders');
     } catch (error) {
-        tg.showAlert('❌ Ошибка удаления');
+        showToast('❌ Ошибка удаления');
     }
 }
 
 function editProfile() {
-    tg.showPopup({
-        title: 'Изменение данных',
-        message: 'Введите новое имя',
-        buttons: [
-            { id: 'save', type: 'default', text: 'Сохранить' },
-            { id: 'cancel', type: 'cancel', text: 'Отмена' }
-        ]
-    }, function(buttonId) {
-        if (buttonId === 'save') {
-            const newName = prompt('Введите имя:', currentUser.firstName);
-            if (newName && newName !== currentUser.firstName) {
-                fetchAPI('/user/' + currentUser.id, {
-                    method: 'PUT',
-                    body: JSON.stringify({ firstName: newName })
-                }).then(() => {
-                    currentUser.firstName = newName;
-                    tg.showAlert('✅ Данные обновлены');
-                    loadProfileData();
-                }).catch(() => {
-                    tg.showAlert('❌ Ошибка обновления');
-                });
-            }
-        }
-    });
+    const newName = prompt('Введите новое имя:', currentUser.firstName);
+    if (newName && newName !== currentUser.firstName) {
+        fetchAPI('/user/' + currentUser.id, {
+            method: 'PUT',
+            body: JSON.stringify({ firstName: newName })
+        }).then(() => {
+            currentUser.firstName = newName;
+            refreshProfile();
+            showToast('✅ Имя обновлено');
+        });
+    }
 }
 
-// Запуск приложения
+// Запуск
 document.addEventListener('DOMContentLoaded', initApp);
