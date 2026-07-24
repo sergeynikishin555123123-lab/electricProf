@@ -17,12 +17,10 @@ files.forEach(file => {
   }
 });
 
-// Хранилище временных данных регистрации
 const pendingPhones = {};
 const pendingRoles = {};
 const userStates = {};
 
-// Вспомогательные функции
 function readData(filename) {
   try {
     const filePath = path.join(dataDir, `${filename}.json`);
@@ -49,7 +47,6 @@ function generateId() {
   return Date.now().toString(36) + Math.random().toString(36).substr(2);
 }
 
-// API функции
 function getUserById(id) {
   const users = readData('users');
   return users.find(u => u.id === id || u.id.toString() === id.toString());
@@ -57,12 +54,27 @@ function getUserById(id) {
 
 function createUser(userData) {
   const users = readData('users');
+  
+  // Проверяем существующего пользователя
   const existingUser = users.find(u => u.id === userData.id);
-  if (existingUser) return existingUser;
+  
+  if (existingUser) {
+    // Если роль изменилась - обновляем
+    if (userData.role && existingUser.role !== userData.role) {
+      console.log(`🔄 Обновление роли пользователя ${existingUser.firstName}: ${existingUser.role} → ${userData.role}`);
+      existingUser.role = userData.role;
+      existingUser.updatedAt = new Date().toISOString();
+      writeData('users', users);
+    }
+    return existingUser;
+  }
+
+  // Проверяем, не была ли уже назначена роль через /prof
+  const pendingRole = pendingRoles[userData.id];
   
   const newUser = {
     ...userData,
-    role: userData.role || 'client',
+    role: pendingRole || userData.role || 'client',
     rating: 0,
     reviewsCount: 0,
     ordersCount: 0,
@@ -72,10 +84,16 @@ function createUser(userData) {
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString()
   };
-  
+
   users.push(newUser);
   writeData('users', users);
-  console.log(`✅ Новый пользователь: ${newUser.firstName} (${newUser.role})`);
+  
+  // Очищаем pendingRole
+  if (pendingRoles[userData.id]) {
+    delete pendingRoles[userData.id];
+  }
+  
+  console.log(`✅ Новый пользователь: ${newUser.firstName} (роль: ${newUser.role})`);
   return newUser;
 }
 
@@ -117,10 +135,7 @@ function createOrder(orderData) {
   
   orders.push(newOrder);
   writeData('orders', orders);
-  
-  // Уведомление электрикам
   notifyElectricians(newOrder);
-  
   return newOrder;
 }
 
@@ -136,7 +151,6 @@ function updateOrder(id, updates) {
   orders[index] = { ...orders[index], ...updates, updatedAt: new Date().toISOString() };
   writeData('orders', orders);
   
-  // Уведомление клиенту о завершении
   if (updates.status === 'completed' && global.bot) {
     const order = orders[index];
     global.bot.sendMessage(order.clientId, 
@@ -166,7 +180,6 @@ function addMessage(messageData) {
   messages.push(newMessage);
   writeData('messages', messages);
   
-  // Уведомление
   if (global.bot && messageData.receiverId) {
     global.bot.sendMessage(messageData.receiverId, 
       `💬 Новое сообщение по заявке\n📝 ${messageData.text.substring(0, 100)}`
@@ -194,7 +207,6 @@ function addReview(reviewData) {
   reviews.push(newReview);
   writeData('reviews', reviews);
   
-  // Обновление рейтинга
   const userReviews = reviews.filter(r => r.targetId === reviewData.targetId);
   const avgRating = userReviews.reduce((sum, r) => sum + r.rating, 0) / userReviews.length;
   updateUser(reviewData.targetId, { 
@@ -213,16 +225,11 @@ function notifyElectricians(order) {
   
   electricians.forEach(electrician => {
     global.bot.sendMessage(electrician.id, 
-      `🔌 Новая заявка!\n\n` +
-      `📍 ${order.address}\n` +
-      `🔧 ${order.service}\n` +
-      `💰 ${order.price}\n\n` +
-      `Откройте приложение, чтобы откликнуться!`
+      `🔌 Новая заявка!\n\n📍 ${order.address}\n🔧 ${order.service}\n💰 ${order.price}\n\nОткройте приложение, чтобы откликнуться!`
     ).catch(() => {});
   });
 }
 
-// Создание Express приложения
 const app = express();
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
@@ -232,6 +239,8 @@ app.get('/api/user/:id', (req, res) => {
   try {
     const user = getUserById(req.params.id);
     if (!user) return res.status(404).json({ error: 'Пользователь не найден' });
+    
+    // Возвращаем пользователя с актуальной ролью
     res.json(user);
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -373,21 +382,20 @@ app.get('/api/admin/orders', (req, res) => {
   }
 });
 
-// Health check
 app.get('/health', (req, res) => {
   res.json({ 
     status: 'ok', 
     timestamp: new Date().toISOString(),
-    botActive: !!global.bot
+    botActive: !!global.bot,
+    users: readData('users').length
   });
 });
 
-// Запуск бота с защитой от падений
+// Запуск бота
 const TelegramBot = require('node-telegram-bot-api');
 const token = process.env.TELEGRAM_BOT_TOKEN;
 
 if (token) {
-  // Создаем бота с настройками для стабильной работы
   const bot = new TelegramBot(token, { 
     polling: {
       interval: 300,
@@ -400,38 +408,48 @@ if (token) {
   
   global.bot = bot;
   
-  // Обработка ошибок polling
   bot.on('polling_error', (error) => {
-    console.error('Ошибка polling:', error.message);
-    
-    // Перезапуск polling при фатальной ошибке
+    console.error('Polling error:', error.message);
     if (error.message.includes('EFATAL')) {
-      console.log('Перезапуск polling через 5 секунд...');
+      console.log('Restarting polling...');
       setTimeout(() => {
-        bot.stopPolling()
-          .then(() => bot.startPolling())
-          .catch(err => console.error('Ошибка перезапуска:', err));
+        bot.stopPolling().then(() => bot.startPolling()).catch(() => {});
       }, 5000);
     }
   });
-  
-  bot.on('error', (error) => {
-    console.error('Ошибка бота:', error.message);
-  });
 
-  // Команда /start
+  // /start - РЕГИСТРАЦИЯ КЛИЕНТА
   bot.onText(/\/start/, async (msg) => {
     try {
       const chatId = msg.chat.id;
       const userId = msg.from.id;
       
-      console.log(`Пользователь ${userId} запустил бота`);
+      console.log(`/start от пользователя ${userId}`);
+      
+      // Очищаем pending роль - /start всегда регистрирует как клиента
+      delete pendingRoles[userId];
       
       const existingUser = getUserById(userId);
       
       if (existingUser) {
-        // Пользователь уже зарегистрирован
+        // Пользователь уже существует - показываем его актуальную роль
         const webAppUrl = process.env.PUBLIC_URL || `https://${process.env.APP_DOMAIN || 'localhost:3000'}`;
+        
+        // Если был электриком, но нажал /start - предупреждаем
+        if (existingUser.role === 'electrician') {
+          await bot.sendMessage(chatId, 
+            `⚠️ Вы зарегистрированы как электрик!\n\n` +
+            `Для клиентского интерфейса используйте другого пользователя или удалите текущую регистрацию.`,
+            {
+              reply_markup: {
+                inline_keyboard: [[
+                  { text: '📱 Открыть приложение', web_app: { url: webAppUrl } }
+                ]]
+              }
+            }
+          );
+          return;
+        }
         
         await bot.sendMessage(chatId, 
           `👋 С возвращением, ${existingUser.firstName}!\n\n` +
@@ -447,9 +465,7 @@ if (token) {
           }
         );
       } else {
-        // Новая регистрация
-        userStates[userId] = { step: 'start' };
-        
+        // Новая регистрация как клиент
         await bot.sendMessage(chatId, 
           '👋 Добро пожаловать в сервис поиска электриков!\n\n' +
           'Для начала работы необходимо зарегистрироваться.\n' +
@@ -468,20 +484,113 @@ if (token) {
     }
   });
 
-  // Обработка callback_query (кнопки регионов и т.д.)
+  // /prof - РЕГИСТРАЦИЯ ЭЛЕКТРИКА
+  bot.onText(/\/prof/, async (msg) => {
+    try {
+      const chatId = msg.chat.id;
+      const userId = msg.from.id;
+      
+      console.log(`/prof от пользователя ${userId}`);
+      
+      const existingUser = getUserById(userId);
+      
+      // Если уже зарегистрирован как электрик
+      if (existingUser && existingUser.role === 'electrician') {
+        const webAppUrl = process.env.PUBLIC_URL || `https://${process.env.APP_DOMAIN || 'localhost:3000'}`;
+        await bot.sendMessage(chatId, 
+          `👨‍🔧 Вы уже зарегистрированы как исполнитель!\n\n` +
+          `Имя: ${existingUser.firstName}\n` +
+          `Телефон: ${existingUser.phone}\n` +
+          `Регион: ${existingUser.region}`,
+          {
+            reply_markup: {
+              inline_keyboard: [[
+                { text: '📱 Открыть приложение', web_app: { url: webAppUrl } }
+              ]]
+            }
+          }
+        );
+        return;
+      }
+      
+      // Если был клиентом - обновим роль
+      if (existingUser && existingUser.role === 'client') {
+        await bot.sendMessage(chatId, 
+          '🔄 Вы уже зарегистрированы как клиент.\n' +
+          'Сейчас обновим вашу роль на электрика.\n\n' +
+          'Поделитесь номером телефона для подтверждения:',
+          {
+            reply_markup: {
+              keyboard: [[
+                { text: '📱 Отправить номер телефона', request_contact: true }
+              ]],
+              resize_keyboard: true,
+              one_time_keyboard: true
+            }
+          }
+        );
+        
+        pendingRoles[userId] = 'electrician';
+        return;
+      }
+      
+      // Новая регистрация как электрик
+      pendingRoles[userId] = 'electrician';
+      
+      await bot.sendMessage(chatId, 
+        '👨‍🔧 Регистрация исполнителя\n\n' +
+        'Поделитесь номером телефона:',
+        {
+          reply_markup: {
+            keyboard: [[
+              { text: '📱 Отправить номер телефона', request_contact: true }
+            ]],
+            resize_keyboard: true,
+            one_time_keyboard: true
+          }
+        }
+      );
+    } catch (error) {
+      console.error('Ошибка в /prof:', error);
+    }
+  });
+
+  // /admin
+  bot.onText(/\/admin/, async (msg) => {
+    try {
+      const chatId = msg.chat.id;
+      const userId = msg.from.id;
+      const adminId = parseInt(process.env.ADMIN_ID);
+      
+      if (userId !== adminId) {
+        await bot.sendMessage(chatId, '⛔ Доступ запрещен. Только для администратора.');
+        return;
+      }
+      
+      const webAppUrl = process.env.PUBLIC_URL || `https://${process.env.APP_DOMAIN || 'localhost:3000'}`;
+      
+      await bot.sendMessage(chatId, '👑 Панель администратора', {
+        reply_markup: {
+          inline_keyboard: [[
+            { text: '📊 Открыть панель', web_app: { url: `${webAppUrl}?admin=true` } }
+          ]]
+        }
+      });
+    } catch (error) {
+      console.error('Ошибка в /admin:', error);
+    }
+  });
+
+  // Обработка callback_query
   bot.on('callback_query', async (query) => {
     try {
       const chatId = query.message.chat.id;
       const userId = query.from.id;
       const data = query.data;
       
-      console.log(`Callback от ${userId}: ${data}`);
-      
-      // Подтверждаем получение callback
       await bot.answerCallbackQuery(query.id);
       
       if (data === 'start_registration') {
-        // Запрашиваем телефон
         await bot.sendMessage(chatId, 
           '📱 Пожалуйста, поделитесь номером телефона.\n\n' +
           'Нажмите кнопку "Отправить номер" ниже.\n' +
@@ -496,11 +605,8 @@ if (token) {
             }
           }
         );
-        
-        userStates[userId] = { step: 'waiting_phone' };
       }
       
-      // Обработка выбора региона
       if (data && data.startsWith('region_')) {
         const region = data.replace('region_', '');
         const regionNames = {
@@ -512,9 +618,12 @@ if (token) {
         const phone = pendingPhones[userId];
         
         if (!phone) {
-          await bot.sendMessage(chatId, '❌ Ошибка: номер телефона не найден. Начните регистрацию заново: /start');
+          await bot.sendMessage(chatId, '❌ Ошибка: номер телефона не найден. Начните заново: /start или /prof');
           return;
         }
+        
+        // Получаем роль из pending или используем client по умолчанию
+        const role = pendingRoles[userId] || 'client';
         
         const userData = {
           id: userId,
@@ -523,7 +632,7 @@ if (token) {
           username: query.from.username || '',
           phone: phone,
           region: regionNames[region] || region,
-          role: pendingRoles[userId] || 'client'
+          role: role
         };
         
         const user = createUser(userData);
@@ -550,7 +659,6 @@ if (token) {
         // Очищаем временные данные
         delete pendingPhones[userId];
         delete pendingRoles[userId];
-        delete userStates[userId];
         
         console.log(`✅ Пользователь ${userId} зарегистрирован как ${user.role}`);
       }
@@ -567,11 +675,9 @@ if (token) {
       
       if (msg.contact && msg.contact.phone_number) {
         pendingPhones[userId] = msg.contact.phone_number;
-        userStates[userId] = { step: 'waiting_region' };
         
-        console.log(`Получен телефон от ${userId}: ${msg.contact.phone_number}`);
+        console.log(`📱 Получен телефон от ${userId}: ${msg.contact.phone_number}, роль: ${pendingRoles[userId] || 'client'}`);
         
-        // Показываем выбор региона
         await bot.sendMessage(chatId, '📍 Выберите ваш регион:', {
           reply_markup: {
             inline_keyboard: [
@@ -587,10 +693,9 @@ if (token) {
     }
   });
 
-  // Обработка текстовых сообщений
+  // Обработка текстовых сообщений (ручной ввод телефона)
   bot.on('message', async (msg) => {
     try {
-      // Пропускаем команды и контакты
       if (msg.text && msg.text.startsWith('/')) return;
       if (msg.contact) return;
       
@@ -598,121 +703,42 @@ if (token) {
       const userId = msg.from.id;
       const text = msg.text;
       
-      // Проверяем состояние пользователя
-      const state = userStates[userId];
-      
-      // Если пользователь в процессе регистрации и отправил текст
-      if (state && state.step === 'waiting_phone' && text) {
-        // Проверяем что это похоже на телефон
-        const phoneRegex = /^[\+]?[0-9]{10,12}$/;
-        const cleanPhone = text.replace(/[\s\(\)\-]/g, '');
+      if (text && /^[\+]?[0-9]{10,12}$/.test(text.replace(/[\s\(\)\-]/g, ''))) {
+        pendingPhones[userId] = text.replace(/[\s\(\)\-]/g, '');
         
-        if (phoneRegex.test(cleanPhone)) {
-          pendingPhones[userId] = cleanPhone;
-          userStates[userId] = { step: 'waiting_region' };
-          
-          console.log(`Получен телефон (текстом) от ${userId}: ${cleanPhone}`);
-          
-          await bot.sendMessage(chatId, '📍 Выберите ваш регион:', {
-            reply_markup: {
-              inline_keyboard: [
-                [{ text: '🏙️ Зеленоград', callback_data: 'region_zelenograd' }],
-                [{ text: '🏘️ Андреевка', callback_data: 'region_andreevka' }],
-                [{ text: '🌊 Голубое', callback_data: 'region_goluboe' }]
-              ],
-              remove_keyboard: true
-            }
-          });
-        } else {
-          await bot.sendMessage(chatId, 
-            '❌ Неверный формат телефона.\n' +
-            'Пожалуйста, отправьте номер в формате: +79001234567\n' +
-            'Или нажмите кнопку "Отправить номер телефона"'
-          );
-        }
+        console.log(`📱 Получен телефон (текст) от ${userId}, роль: ${pendingRoles[userId] || 'client'}`);
+        
+        await bot.sendMessage(chatId, '📍 Выберите ваш регион:', {
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: '🏙️ Зеленоград', callback_data: 'region_zelenograd' }],
+              [{ text: '🏘️ Андреевка', callback_data: 'region_andreevka' }],
+              [{ text: '🌊 Голубое', callback_data: 'region_goluboe' }]
+            ],
+            remove_keyboard: true
+          }
+        });
       }
     } catch (error) {
       console.error('Ошибка в message:', error);
     }
   });
 
-  // Команда /prof
-  bot.onText(/\/prof/, async (msg) => {
-    try {
-      const chatId = msg.chat.id;
-      const userId = msg.from.id;
-      
-      const existingUser = getUserById(userId);
-      if (existingUser && existingUser.role === 'electrician') {
-        await bot.sendMessage(chatId, '❌ Вы уже зарегистрированы как исполнитель');
-        return;
-      }
-      
-      pendingRoles[userId] = 'electrician';
-      userStates[userId] = { step: 'waiting_phone' };
-      
-      await bot.sendMessage(chatId, 
-        '👨‍🔧 Регистрация исполнителя\n\nПоделитесь номером телефона:',
-        {
-          reply_markup: {
-            keyboard: [[
-              { text: '📱 Отправить номер телефона', request_contact: true }
-            ]],
-            resize_keyboard: true,
-            one_time_keyboard: true
-          }
-        }
-      );
-    } catch (error) {
-      console.error('Ошибка в /prof:', error);
-    }
-  });
-
-  // Команда /admin
-  bot.onText(/\/admin/, async (msg) => {
-    try {
-      const chatId = msg.chat.id;
-      const userId = msg.from.id;
-      const adminId = parseInt(process.env.ADMIN_ID);
-      
-      if (userId !== adminId) {
-        await bot.sendMessage(chatId, '⛔ Доступ запрещен. Только для администратора.');
-        return;
-      }
-      
-      const webAppUrl = process.env.PUBLIC_URL || `https://${process.env.APP_DOMAIN || 'localhost:3000'}`;
-      
-      await bot.sendMessage(chatId, '👑 Панель администратора', {
-        reply_markup: {
-          inline_keyboard: [[
-            { text: '📊 Открыть панель', web_app: { url: `${webAppUrl}?admin=true` } }
-          ]]
-        }
-      });
-    } catch (error) {
-      console.error('Ошибка в /admin:', error);
-    }
-  });
-
   console.log('✅ Telegram бот успешно запущен');
 } else {
-  console.warn('⚠️ TELEGRAM_BOT_TOKEN не указан. Бот не будет работать.');
+  console.warn('⚠️ TELEGRAM_BOT_TOKEN не указан');
 }
 
-// Запуск сервера
-const PORT = process.env.PORT || 3000;
-
-// Добавляем обработку неотловленных ошибок
 process.on('uncaughtException', (error) => {
   console.error('Неотловленная ошибка:', error);
 });
 
 process.on('unhandledRejection', (error) => {
-  console.error('Необработанный Promise rejection:', error);
+  console.error('Необработанный Promise:', error);
 });
 
+const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`🚀 Сервер запущен на порту ${PORT}`);
-  console.log(`📱 WebApp доступен: http://localhost:${PORT}`);
-  console.log(`💡 Используйте /start в боте для начала работы`);
+  console.log(`📱 WebApp: http://localhost:${PORT}`);
 });
