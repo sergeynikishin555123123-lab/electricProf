@@ -55,28 +55,43 @@ async function initApp() {
         
         if (initData && initData.user) {
             const userId = initData.user.id;
-            currentUser = await fetchAPI(`/user/${userId}`);
             
-            if (!currentUser) {
-                showError('Пользователь не найден. Зарегистрируйтесь через бота.');
-                return;
-            }
-            
-            userRole = currentUser.role;
-            document.getElementById('app').innerHTML = renderApp();
-            
-            if (window.location.search.includes('admin=true') && userRole === 'admin') {
-                showAdminPanel();
-            } else if (userRole === 'electrician') {
-                showElectricianPanel();
-            } else {
-                showClientPanel();
+            try {
+                const response = await fetch(API_BASE + '/user/' + userId);
+                
+                if (!response.ok) {
+                    document.getElementById('app').innerHTML = `
+                        <div class="loading-screen">
+                            <p style="text-align: center; padding: 20px;">
+                                👋 Добро пожаловать!<br><br>
+                                Вы еще не зарегистрированы.<br>
+                                Вернитесь в бот и нажмите "Начать регистрацию"
+                            </p>
+                        </div>
+                    `;
+                    return;
+                }
+                
+                currentUser = await response.json();
+                userRole = currentUser.role;
+                
+                document.getElementById('app').innerHTML = renderApp();
+                
+                if (window.location.search.includes('admin=true') && userRole === 'admin') {
+                    showAdminPanel();
+                } else if (userRole === 'electrician') {
+                    showElectricianPanel();
+                } else {
+                    showClientPanel();
+                }
+            } catch (error) {
+                showError('Ошибка загрузки данных: ' + error.message);
             }
         } else {
-            showError('Ошибка инициализации. Откройте приложение через Telegram.');
+            showError('Откройте приложение через Telegram');
         }
     } catch (error) {
-        showError('Ошибка загрузки: ' + error.message);
+        showError('Ошибка: ' + error.message);
     }
 }
 
@@ -147,26 +162,30 @@ function showClientPanel() {
             </button>
         </div>
     `;
-    
-    switchScreen('profile');
-    loadProfileData();
 }
 
 function switchScreen(screenName) {
     document.querySelectorAll('#main-screen .screen').forEach(s => s.classList.remove('active'));
-    document.getElementById(screenName + '-screen').classList.add('active');
+    const targetScreen = document.getElementById(screenName + '-screen');
+    if (targetScreen) {
+        targetScreen.classList.add('active');
+    }
     
     document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
-    event?.target?.closest('.nav-item')?.classList.add('active');
+    const clickedBtn = event?.target?.closest('.nav-item');
+    if (clickedBtn) {
+        clickedBtn.classList.add('active');
+    }
     
     if (screenName === 'orders') loadOrdersList();
+    if (screenName === 'profile') loadProfileData();
 }
 
 function renderClientProfile() {
     return `
         <div class="profile-header">
-            <div class="profile-avatar">${currentUser.firstName[0]}</div>
-            <h2>${currentUser.firstName} ${currentUser.lastName || ''}</h2>
+            <div class="profile-avatar">${currentUser.firstName ? currentUser.firstName[0] : '?'}</div>
+            <h2>${currentUser.firstName || ''} ${currentUser.lastName || ''}</h2>
         </div>
         
         <div class="profile-stats">
@@ -185,8 +204,8 @@ function renderClientProfile() {
         </div>
         
         <div class="profile-info">
-            <p>📱 ${currentUser.phone}</p>
-            <p>📍 ${currentUser.region}</p>
+            <p>📱 ${currentUser.phone || 'Не указан'}</p>
+            <p>📍 ${currentUser.region || 'Не указан'}</p>
             <p>🏠 ${currentUser.address || 'Не указан'}</p>
         </div>
         
@@ -196,30 +215,32 @@ function renderClientProfile() {
     `;
 }
 
+function loadProfileData() {
+    const profileScreen = document.getElementById('profile-screen');
+    if (profileScreen) {
+        profileScreen.innerHTML = renderClientProfile();
+    }
+}
+
 function renderCreateOrder() {
-    const categories = [...new Set(SERVICES.map(s => s.category))];
-    const serviceOptions = SERVICES.map(s => 
-        `<option value="${s.name}">${s.name} (${s.price})</option>`
-    ).join('');
-    
     return `
         <h2>📝 Создать заявку</h2>
         
         <div class="form-group">
-            <label class="form-label">Услуга</label>
+            <label class="form-label">Поиск услуги</label>
+            <input type="text" class="form-input" placeholder="Начните вводить услугу..." 
+                   oninput="searchServices(this.value)">
+            <div id="service-results" class="service-list"></div>
+        </div>
+        
+        <div class="form-group">
+            <label class="form-label">Выбранная услуга</label>
             <select id="service-select" class="form-select" onchange="updateServicePrice()">
                 <option value="">Выберите услугу</option>
                 ${SERVICES.map(s => 
                     `<option value="${s.name}" data-price="${s.price}">${s.name} (${s.price})</option>`
                 ).join('')}
             </select>
-        </div>
-        
-        <div id="service-search" class="form-group" style="display:none;">
-            <label class="form-label">Поиск услуги</label>
-            <input type="text" class="form-input" placeholder="Начните вводить..." 
-                   oninput="searchServices(this.value)">
-            <div id="service-results" class="service-list"></div>
         </div>
         
         <div class="form-group">
@@ -250,31 +271,46 @@ function renderCreateOrder() {
 
 function updateServicePrice() {
     const select = document.getElementById('service-select');
-    const selectedOption = select.options[select.selectedIndex];
-    selectedService = {
-        name: select.value,
-        price: selectedOption.dataset.price
-    };
+    if (select && select.options[select.selectedIndex]) {
+        const selectedOption = select.options[select.selectedIndex];
+        selectedService = {
+            name: select.value,
+            price: selectedOption.dataset.price
+        };
+    }
 }
 
 function searchServices(query) {
+    if (!query || query.trim() === '') {
+        document.getElementById('service-results').innerHTML = '';
+        return;
+    }
+    
     const results = SERVICES.filter(s => 
         s.name.toLowerCase().includes(query.toLowerCase())
     );
     
     const container = document.getElementById('service-results');
-    container.innerHTML = results.map(s => `
-        <div class="service-item ${selectedService?.name === s.name ? 'selected' : ''}" 
-             onclick="selectService('${s.name}', '${s.price}')">
-            <strong>${s.name}</strong>
-            <span style="float: right; color: var(--tg-theme-hint-color)">${s.price}</span>
-        </div>
-    `).join('');
+    if (!container) return;
+    
+    container.innerHTML = results.length === 0 
+        ? '<div class="service-item">Ничего не найдено</div>'
+        : results.map(s => `
+            <div class="service-item ${selectedService?.name === s.name ? 'selected' : ''}" 
+                 onclick="selectService('${s.name}', '${s.price}')">
+                <strong>${s.name}</strong>
+                <span class="service-price">${s.price}</span>
+            </div>
+        `).join('');
 }
 
 function selectService(name, price) {
     selectedService = { name, price };
-    document.getElementById('service-select').value = name;
+    const select = document.getElementById('service-select');
+    if (select) {
+        select.value = name;
+    }
+    
     document.querySelectorAll('.service-item').forEach(item => {
         item.classList.remove('selected');
         if (item.querySelector('strong').textContent === name) {
@@ -297,33 +333,36 @@ function renderOrdersList() {
 }
 
 async function loadOrdersList(status = 'active') {
+    const container = document.getElementById('orders-container');
+    if (!container) return;
+    
     try {
-        const orders = await fetchAPI(`/orders/client/${currentUser.id}`);
+        const orders = await fetchAPI('/orders/client/' + currentUser.id);
         const filteredOrders = orders.filter(o => 
             status === 'active' ? o.status === 'active' : o.status === 'completed'
         );
         
-        document.getElementById('orders-container').innerHTML = filteredOrders.length === 0 
-            ? '<p style="text-align: center; color: var(--tg-theme-hint-color)">Нет заявок</p>'
+        container.innerHTML = filteredOrders.length === 0 
+            ? '<div class="empty-state"><p>Нет заявок</p></div>'
             : filteredOrders.map(order => `
                 <div class="order-card" onclick="viewOrder('${order.id}')">
                     <div class="order-header">
                         <h3>${order.service}</h3>
-                        <span class="order-status ${order.status === 'active' ? 'status-active' : 'status-completed'}">
+                        <span class="order-status status-${order.status === 'active' ? 'active' : 'completed'}">
                             ${order.status === 'active' ? 'Активна' : 'Завершена'}
                         </span>
                     </div>
                     <div class="order-price">${order.price}</div>
                     <div class="order-details">
                         <p>📍 ${order.address}</p>
-                        <p>🕐 ${order.desiredTime}</p>
+                        <p>🕐 ${order.desiredTime || 'Не указано'}</p>
                         <p>📅 ${new Date(order.createdAt).toLocaleDateString()}</p>
                         ${order.electricianId ? '<p>👨‍🔧 Исполнитель назначен</p>' : '<p>🔍 Ищем исполнителя</p>'}
                     </div>
                 </div>
             `).join('');
     } catch (error) {
-        document.getElementById('orders-container').innerHTML = 'Ошибка загрузки';
+        container.innerHTML = '<div class="empty-state"><p>Ошибка загрузки</p></div>';
     }
 }
 
@@ -334,13 +373,13 @@ function filterOrders(status, btn) {
 }
 
 async function publishOrder() {
-    const service = document.getElementById('service-select').value;
-    const address = document.getElementById('order-address').value;
-    const description = document.getElementById('order-description').value;
-    const time = document.getElementById('order-time').value;
-    const comment = document.getElementById('order-comment').value;
+    const serviceSelect = document.getElementById('service-select');
+    const address = document.getElementById('order-address').value.trim();
+    const description = document.getElementById('order-description').value.trim();
+    const time = document.getElementById('order-time').value.trim();
+    const comment = document.getElementById('order-comment').value.trim();
     
-    if (!service) {
+    if (!serviceSelect || !serviceSelect.value) {
         tg.showAlert('Выберите услугу');
         return;
     }
@@ -351,11 +390,11 @@ async function publishOrder() {
     }
     
     try {
-        const order = await fetchAPI('/orders', {
+        await fetchAPI('/orders', {
             method: 'POST',
             body: JSON.stringify({
                 clientId: currentUser.id,
-                service: service,
+                service: serviceSelect.value,
                 price: selectedService?.price || 'Договорная',
                 address: address,
                 description: description,
@@ -365,11 +404,8 @@ async function publishOrder() {
         });
         
         tg.showAlert('✅ Заявка опубликована!');
-        switchScreen('orders');
-        loadOrdersList();
-        
-        // Обновление счетчика
         currentUser.ordersCount = (currentUser.ordersCount || 0) + 1;
+        switchScreen('orders');
     } catch (error) {
         tg.showAlert('❌ Ошибка публикации');
     }
@@ -377,36 +413,37 @@ async function publishOrder() {
 
 async function viewOrder(orderId) {
     try {
-        const orders = await fetchAPI(`/orders/client/${currentUser.id}`);
+        const orders = await fetchAPI('/orders/client/' + currentUser.id);
         const order = orders.find(o => o.id === orderId);
         
-        if (!order) return;
+        if (!order) {
+            tg.showAlert('Заявка не найдена');
+            return;
+        }
         
         const detailScreen = document.getElementById('order-detail-screen');
         detailScreen.innerHTML = `
             <div style="padding: 16px;">
-                <button class="btn" onclick="closeOrderDetail()">← Назад</button>
+                <button class="back-btn" onclick="closeOrderDetail()">← Назад</button>
                 <h2 style="margin: 16px 0;">${order.service}</h2>
                 <div class="order-price">${order.price}</div>
-                <p>📍 ${order.address}</p>
-                <p>📝 ${order.description}</p>
-                <p>🕐 ${order.desiredTime}</p>
-                <p>💬 ${order.comment || 'Нет комментария'}</p>
+                <div class="order-details" style="margin: 16px 0;">
+                    <p>📍 ${order.address}</p>
+                    <p>📝 ${order.description || 'Нет описания'}</p>
+                    <p>🕐 ${order.desiredTime || 'Не указано'}</p>
+                    <p>💬 ${order.comment || 'Нет комментария'}</p>
+                </div>
                 
                 ${order.electricianId ? `
                     <button class="btn btn-primary btn-block" onclick="openChat('${order.id}')">
                         💬 Чат с исполнителем
                     </button>
-                ` : `
-                    <p style="color: var(--tg-theme-hint-color)">Ожидание исполнителя...</p>
-                `}
+                ` : ''}
                 
                 ${order.status === 'active' ? `
-                    <div style="margin-top: 12px;">
-                        <button class="btn btn-danger btn-block" onclick="cancelOrder('${order.id}')">
-                            ❌ Отменить заявку
-                        </button>
-                    </div>
+                    <button class="btn btn-danger btn-block" onclick="cancelOrder('${order.id}')">
+                        ❌ Отменить заявку
+                    </button>
                 ` : ''}
             </div>
         `;
@@ -426,7 +463,7 @@ function closeOrderDetail() {
 
 async function cancelOrder(orderId) {
     try {
-        await fetchAPI(`/orders/${orderId}`, {
+        await fetchAPI('/orders/' + orderId, {
             method: 'PUT',
             body: JSON.stringify({ status: 'cancelled' })
         });
@@ -475,6 +512,10 @@ function switchElectricianScreen(screenName) {
     document.querySelectorAll('#main-screen .screen').forEach(s => s.classList.remove('active'));
     document.getElementById(screenName + '-screen').classList.add('active');
     
+    document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+    const clickedBtn = event?.target?.closest('.nav-item');
+    if (clickedBtn) clickedBtn.classList.add('active');
+    
     if (screenName === 'available-orders') loadAvailableOrders();
     if (screenName === 'my-jobs') loadMyJobs();
 }
@@ -482,8 +523,8 @@ function switchElectricianScreen(screenName) {
 function renderElectricianProfile() {
     return `
         <div class="profile-header">
-            <div class="profile-avatar">${currentUser.firstName[0]}</div>
-            <h2>${currentUser.firstName} ${currentUser.lastName || ''}</h2>
+            <div class="profile-avatar">${currentUser.firstName ? currentUser.firstName[0] : '?'}</div>
+            <h2>${currentUser.firstName || ''} ${currentUser.lastName || ''}</h2>
             <p>👨‍🔧 Электрик</p>
         </div>
         
@@ -503,8 +544,8 @@ function renderElectricianProfile() {
         </div>
         
         <div class="profile-info">
-            <p>📱 ${currentUser.phone}</p>
-            <p>📍 ${currentUser.region}</p>
+            <p>📱 ${currentUser.phone || 'Не указан'}</p>
+            <p>📍 ${currentUser.region || 'Не указан'}</p>
         </div>
     `;
 }
@@ -517,19 +558,22 @@ function renderAvailableOrders() {
 }
 
 async function loadAvailableOrders() {
+    const container = document.getElementById('available-orders-container');
+    if (!container) return;
+    
     try {
         const orders = await fetchAPI('/orders/available');
         
-        document.getElementById('available-orders-container').innerHTML = orders.length === 0
-            ? '<p style="text-align: center; color: var(--tg-theme-hint-color)">Нет доступных заявок</p>'
+        container.innerHTML = orders.length === 0
+            ? '<div class="empty-state"><p>Нет доступных заявок</p></div>'
             : orders.map(order => `
                 <div class="order-card">
                     <h3>${order.service}</h3>
                     <div class="order-price">${order.price}</div>
                     <div class="order-details">
                         <p>📍 ${order.address}</p>
-                        <p>📝 ${order.description}</p>
-                        <p>🕐 ${order.desiredTime}</p>
+                        <p>📝 ${order.description || 'Нет описания'}</p>
+                        <p>🕐 ${order.desiredTime || 'Не указано'}</p>
                         <p>📅 ${new Date(order.createdAt).toLocaleDateString()}</p>
                     </div>
                     <button class="btn btn-primary btn-block" onclick="respondToOrder('${order.id}')">
@@ -538,13 +582,13 @@ async function loadAvailableOrders() {
                 </div>
             `).join('');
     } catch (error) {
-        document.getElementById('available-orders-container').innerHTML = 'Ошибка загрузки';
+        container.innerHTML = '<div class="empty-state"><p>Ошибка загрузки</p></div>';
     }
 }
 
 async function respondToOrder(orderId) {
     try {
-        await fetchAPI(`/orders/${orderId}`, {
+        await fetchAPI('/orders/' + orderId, {
             method: 'PUT',
             body: JSON.stringify({
                 electricianId: currentUser.id,
@@ -573,32 +617,37 @@ function renderMyJobs() {
 }
 
 async function loadMyJobs(status = 'active') {
+    const container = document.getElementById('my-jobs-container');
+    if (!container) return;
+    
     try {
-        const orders = await fetchAPI(`/orders/electrician/${currentUser.id}`);
+        const orders = await fetchAPI('/orders/electrician/' + currentUser.id);
         const filteredOrders = orders.filter(o => 
             status === 'active' ? o.status === 'active' : o.status === 'completed'
         );
         
-        document.getElementById('my-jobs-container').innerHTML = filteredOrders.length === 0
-            ? '<p style="text-align: center; color: var(--tg-theme-hint-color)">Нет объектов</p>'
+        container.innerHTML = filteredOrders.length === 0
+            ? '<div class="empty-state"><p>Нет объектов</p></div>'
             : filteredOrders.map(order => `
                 <div class="order-card">
                     <h3>${order.service}</h3>
                     <div class="order-price">${order.price}</div>
-                    <p>📍 ${order.address}</p>
-                    <p>📝 ${order.description}</p>
+                    <div class="order-details">
+                        <p>📍 ${order.address}</p>
+                        <p>📝 ${order.description || 'Нет описания'}</p>
+                    </div>
                     <button class="btn btn-primary btn-block" onclick="openChat('${order.id}')">
                         💬 Чат с клиентом
                     </button>
                     ${order.status === 'active' ? `
-                        <button class="btn btn-danger btn-block" onclick="completeJob('${order.id}')" style="margin-top: 8px;">
+                        <button class="btn btn-danger btn-block" onclick="completeJob('${order.id}')">
                             ✅ Завершить работу
                         </button>
                     ` : ''}
                 </div>
             `).join('');
     } catch (error) {
-        document.getElementById('my-jobs-container').innerHTML = 'Ошибка загрузки';
+        container.innerHTML = '<div class="empty-state"><p>Ошибка загрузки</p></div>';
     }
 }
 
@@ -610,7 +659,7 @@ function filterMyJobs(status, btn) {
 
 async function completeJob(orderId) {
     try {
-        await fetchAPI(`/orders/${orderId}`, {
+        await fetchAPI('/orders/' + orderId, {
             method: 'PUT',
             body: JSON.stringify({ status: 'completed' })
         });
@@ -630,13 +679,15 @@ async function openChat(orderId) {
         const chatScreen = document.getElementById('chat-screen');
         chatScreen.innerHTML = `
             <div class="chat-container">
-                <div style="padding: 8px; border-bottom: 1px solid var(--tg-theme-secondary-bg-color);">
-                    <button class="btn" onclick="closeChat()">← Назад</button>
-                    <span style="margin-left: 8px;">Чат по заявке</span>
+                <div class="chat-header">
+                    <button class="back-btn" onclick="closeChat()">← Назад</button>
+                    <span>Чат по заявке</span>
                 </div>
-                <div class="chat-messages" id="chat-messages"></div>
+                <div class="chat-messages" id="chat-messages">
+                    Загрузка сообщений...
+                </div>
                 <div class="chat-input">
-                    <input type="text" id="message-input" placeholder="Сообщение...">
+                    <input type="text" id="message-input" placeholder="Сообщение..." onkeypress="if(event.key==='Enter')sendMessage()">
                     <button class="chat-send-btn" onclick="sendMessage()">➤</button>
                 </div>
             </div>
@@ -653,7 +704,7 @@ async function openChat(orderId) {
 }
 
 function closeChat() {
-    clearInterval(chatInterval);
+    if (chatInterval) clearInterval(chatInterval);
     document.getElementById('chat-screen').classList.remove('active');
     document.getElementById('main-screen').style.display = 'block';
 }
@@ -661,17 +712,22 @@ function closeChat() {
 async function loadMessages() {
     if (!currentOrderId) return;
     
+    const container = document.getElementById('chat-messages');
+    if (!container) return;
+    
     try {
-        const messages = await fetchAPI(`/messages/${currentOrderId}`);
+        const messages = await fetchAPI('/messages/' + currentOrderId);
         
-        document.getElementById('chat-messages').innerHTML = messages.map(msg => `
-            <div class="message ${msg.senderId === currentUser.id ? 'sent' : 'received'}">
-                <div>${msg.text}</div>
-                <div class="message-time">${new Date(msg.createdAt).toLocaleTimeString()}</div>
-            </div>
-        `).join('');
+        container.innerHTML = messages.length === 0 
+            ? '<div class="empty-state"><p>Нет сообщений</p></div>'
+            : messages.map(msg => `
+                <div class="message ${msg.senderId === currentUser.id ? 'sent' : 'received'}">
+                    <div>${msg.text}</div>
+                    <div class="message-time">${new Date(msg.createdAt).toLocaleTimeString()}</div>
+                </div>
+            `).join('');
         
-        document.getElementById('chat-messages').scrollTop = document.getElementById('chat-messages').scrollHeight;
+        container.scrollTop = container.scrollHeight;
     } catch (error) {
         console.error('Ошибка загрузки сообщений');
     }
@@ -679,15 +735,22 @@ async function loadMessages() {
 
 async function sendMessage() {
     const input = document.getElementById('message-input');
-    const text = input.value.trim();
+    if (!input) return;
     
+    const text = input.value.trim();
     if (!text) return;
     
     try {
-        const orders = await fetchAPI(`/orders/client/${currentUser.id}`);
-        const myOrders = await fetchAPI(`/orders/electrician/${currentUser.id}`);
+        // Определяем получателя
+        const orders = await fetchAPI('/orders/client/' + currentUser.id);
+        const myOrders = await fetchAPI('/orders/electrician/' + currentUser.id);
         const allOrders = [...orders, ...myOrders];
         const order = allOrders.find(o => o.id === currentOrderId);
+        
+        if (!order) {
+            tg.showAlert('Заявка не найдена');
+            return;
+        }
         
         const receiverId = currentUser.id === order.clientId ? order.electricianId : order.clientId;
         
@@ -704,7 +767,7 @@ async function sendMessage() {
         input.value = '';
         await loadMessages();
     } catch (error) {
-        tg.showAlert('Ошибка отправки');
+        tg.showAlert('Ошибка отправки сообщения');
     }
 }
 
@@ -712,7 +775,7 @@ async function sendMessage() {
 function showAdminPanel() {
     const screen = document.getElementById('main-screen');
     screen.innerHTML = `
-        <div class="screen active">
+        <div class="screen active" style="padding: 16px;">
             <h2>👑 Панель администратора</h2>
             
             <div style="display: grid; gap: 12px; margin: 16px 0;">
@@ -734,6 +797,7 @@ function showAdminPanel() {
 
 async function loadAdminSection(section) {
     const content = document.getElementById('admin-content');
+    if (!content) return;
     
     switch(section) {
         case 'users':
@@ -742,17 +806,17 @@ async function loadAdminSection(section) {
                 content.innerHTML = `
                     <h3>👥 Пользователи (${users.length})</h3>
                     ${users.map(u => `
-                        <div class="order-card">
+                        <div class="admin-card">
                             <p><strong>${u.firstName} ${u.lastName || ''}</strong></p>
-                            <p>📱 ${u.phone}</p>
-                            <p>📍 ${u.region}</p>
+                            <p>📱 ${u.phone || 'Нет'}</p>
+                            <p>📍 ${u.region || 'Нет'}</p>
                             <p>Роль: ${u.role}</p>
-                            <button class="btn btn-danger" onclick="deleteUserById('${u.id}')">Удалить</button>
+                            <button class="btn btn-danger btn-block" onclick="deleteUserById('${u.id}')">Удалить</button>
                         </div>
                     `).join('')}
                 `;
             } catch (error) {
-                content.innerHTML = 'Ошибка загрузки';
+                content.innerHTML = '<p>Ошибка загрузки пользователей</p>';
             }
             break;
             
@@ -762,17 +826,17 @@ async function loadAdminSection(section) {
                 content.innerHTML = `
                     <h3>📋 Заявки (${orders.length})</h3>
                     ${orders.map(o => `
-                        <div class="order-card">
+                        <div class="admin-card">
                             <h4>${o.service}</h4>
                             <p>Статус: ${o.status}</p>
                             <p>Клиент: ${o.clientId}</p>
                             <p>Исполнитель: ${o.electricianId || 'Не назначен'}</p>
-                            <button class="btn btn-danger" onclick="deleteOrderById('${o.id}')">Удалить</button>
+                            <button class="btn btn-danger btn-block" onclick="deleteOrderById('${o.id}')">Удалить</button>
                         </div>
                     `).join('')}
                 `;
             } catch (error) {
-                content.innerHTML = 'Ошибка загрузки';
+                content.innerHTML = '<p>Ошибка загрузки заявок</p>';
             }
             break;
             
@@ -809,7 +873,7 @@ async function loadAdminSection(section) {
                     </div>
                 `;
             } catch (error) {
-                content.innerHTML = 'Ошибка загрузки';
+                content.innerHTML = '<p>Ошибка загрузки статистики</p>';
             }
             break;
     }
@@ -817,7 +881,7 @@ async function loadAdminSection(section) {
 
 async function deleteUserById(id) {
     try {
-        await fetchAPI(`/user/${id}`, { method: 'DELETE' });
+        await fetchAPI('/user/' + id, { method: 'DELETE' });
         tg.showAlert('✅ Пользователь удален');
         loadAdminSection('users');
     } catch (error) {
@@ -827,7 +891,7 @@ async function deleteUserById(id) {
 
 async function deleteOrderById(id) {
     try {
-        await fetchAPI(`/orders/${id}`, { method: 'DELETE' });
+        await fetchAPI('/orders/' + id, { method: 'DELETE' });
         tg.showAlert('✅ Заявка удалена');
         loadAdminSection('orders');
     } catch (error) {
@@ -836,18 +900,31 @@ async function deleteOrderById(id) {
 }
 
 function editProfile() {
-    const newName = prompt('Введите имя:', currentUser.firstName);
-    if (newName) {
-        fetchAPI(`/user/${currentUser.id}`, {
-            method: 'PUT',
-            body: JSON.stringify({ firstName: newName })
-        }).then(() => {
-            currentUser.firstName = newName;
-            tg.showAlert('✅ Данные обновлены');
-            switchScreen('profile');
-        });
-    }
+    tg.showPopup({
+        title: 'Изменение данных',
+        message: 'Введите новое имя',
+        buttons: [
+            { id: 'save', type: 'default', text: 'Сохранить' },
+            { id: 'cancel', type: 'cancel', text: 'Отмена' }
+        ]
+    }, function(buttonId) {
+        if (buttonId === 'save') {
+            const newName = prompt('Введите имя:', currentUser.firstName);
+            if (newName && newName !== currentUser.firstName) {
+                fetchAPI('/user/' + currentUser.id, {
+                    method: 'PUT',
+                    body: JSON.stringify({ firstName: newName })
+                }).then(() => {
+                    currentUser.firstName = newName;
+                    tg.showAlert('✅ Данные обновлены');
+                    loadProfileData();
+                }).catch(() => {
+                    tg.showAlert('❌ Ошибка обновления');
+                });
+            }
+        }
+    });
 }
 
 // Запуск приложения
-initApp();
+document.addEventListener('DOMContentLoaded', initApp);
